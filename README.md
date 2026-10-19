@@ -7,54 +7,85 @@
 
 [![Nextflow](https://img.shields.io/badge/version-%E2%89%A525.10.4-green?style=flat&logo=nextflow&logoColor=white&color=%230DC09D&link=https%3A%2F%2Fnextflow.io)](https://www.nextflow.io/)
 [![nf-core template version](https://img.shields.io/badge/nf--core_template-4.0.2-green?style=flat&logo=nfcore&logoColor=white&color=%2324B064&link=https%3A%2F%2Fnf-co.re)](https://github.com/nf-core/tools/releases/tag/4.0.2)
-[![run with conda](http://img.shields.io/badge/run%20with-conda-3EB049?labelColor=000000&logo=anaconda)](https://docs.conda.io/en/latest/)
 [![run with docker](https://img.shields.io/badge/run%20with-docker-0db7ed?labelColor=000000&logo=docker)](https://www.docker.com/)
 [![run with singularity](https://img.shields.io/badge/run%20with-singularity-1d355c.svg?labelColor=000000)](https://sylabs.io/docs/)
 [![Launch on Seqera Platform](https://img.shields.io/badge/Launch%20%F0%9F%9A%80-Seqera%20Platform-%234256e7)](https://cloud.seqera.io/launch?pipeline=https://github.com/bigbio/quantmsandes)
 
 ## Introduction
 
-**bigbio/quantmsandes** is a bioinformatics pipeline that ...
+**bigbio/quantmsandes** is an exploratory pipeline for data-dependent acquisition (DDA)
+proteomics, built on the [andes](https://github.com/bigbio/andes) search engine and following
+[nf-core](https://nf-co.re/) guidelines. Use it to try new algorithms and frontier approaches in
+proteomics, such as glycoproteomics, proteoform identification and quantification, and agentic
+analysis, before they are mature enough for production.
 
-<!-- TODO nf-core:
-   Complete this sentence with a 2-3 sentence summary of what types of data the pipeline ingests, a brief overview of the
-   major pipeline sections and the types of output it produces. You're giving an overview to someone new
-   to nf-core here, in 15-20 seconds. For an example, see https://github.com/nf-core/rnaseq/blob/master/README.md#introduction
--->
+> [!IMPORTANT]
+> **The production pipeline is [quantms](https://github.com/bigbio/quantms).** quantmsandes is
+> for exploring new methods: its defaults, parameters and outputs may change between releases.
+> For routine analyses, use quantms.
 
-<!-- TODO nf-core: Include a figure that guides the user through the major workflow steps. Many nf-core
-     workflows use the "tube map" design for that. See https://nf-co.re/docs/community/brand/workflow-schematics#examples for examples.   -->
-<!-- TODO nf-core: Fill in short bullet-pointed list of the default steps in the pipeline -->2. Present QC for raw reads ([`MultiQC`](http://multiqc.info/))
+## The quantms ecosystem
+
+quantmsandes is one of three pipelines in the quantms ecosystem. Each is independent; pick the
+one that fits the use case.
+
+| Pipeline                                               | Use it for                                                                               | Engines                                           |
+| ------------------------------------------------------ | ---------------------------------------------------------------------------------------- | ------------------------------------------------- |
+| [quantms](https://github.com/bigbio/quantms)           | Production analysis of DDA label-free, TMT/iTRAQ and DIA data                            | OpenMS-based workflow with several search engines |
+| [quantmsdiann](https://github.com/bigbio/quantmsdiann) | DIA analysis with DIA-NN                                                                 | DIA-NN                                            |
+| **quantmsandes**                                       | Exploratory DDA analysis: new algorithms, glycoproteomics, proteoforms, agentic analysis | andes                                             |
+
+All three read [SDRF](https://github.com/bigbio/proteomics-metadata-standard) sample metadata and
+report quality control with [pmultiqc](https://github.com/bigbio/pmultiqc).
+
+## What quantmsandes is for
+
+- **New algorithms in identification and quantification.** andes is a data-driven search
+  engine with its own scoring models, co-isolated (chimeric) peptide search, PTM refinement,
+  and label-free quantification with match-between-runs.
+- **Glycoproteomics.** Intact N-glycopeptide search against species-specific glycan databases.
+- **Proteoforms.** Searching sequence variants, isoforms, mature chains and annotated
+  modification sites from UniProt, PEFF or annotation files, with knockoff-based error
+  estimates for variant identifications, and a per-protein-family proteoform table with
+  quantities.
+- **Agentic analysis.** andes exposes many advanced parameters. quantmsandes passes them
+  through, so an AI agent such as Claude can choose and tune them for a given dataset and
+  question, and compare the outcomes.
+
+## Status
+
+> [!WARNING]
+> quantmsandes is in early development. The repository currently holds the pipeline template
+> and the [design](docs/design.md); the workflow is not runnable yet.
+
+Planned workflow for DDA label-free and TMT/iTRAQ data:
+
+1. **Input validation:** SDRF parsing and validation with
+   [sdrf-pipelines](https://github.com/bigbio/sdrf-pipelines).
+2. **Search:** andes builds its fragment index once, then searches each run (Thermo `.raw`,
+   Bruker `.d` and mzML are read directly).
+3. **PSM rescoring:** one [Percolator](https://github.com/percolator/percolator) run over all
+   runs.
+4. **Quantification:** andes label-free quantification with match-between-runs, or reporter
+   ion quantification for TMT/iTRAQ.
+5. **Protein inference:** [OpenMS](https://www.openms.de/) protein inference.
+6. **Protein quantification:** [mokume](https://github.com/bigbio/mokume).
+7. **Quality control:** [pmultiqc](https://github.com/bigbio/pmultiqc).
+
+The containers come from [quantms-containers](https://github.com/bigbio/quantms-containers).
 
 ## Usage
 
 > [!NOTE]
-> If you are new to Nextflow and nf-core, please refer to [this page](https://nf-co.re/docs/get_started/environment_setup/overview) on how to set-up Nextflow. Make sure to [test your setup](https://nf-co.re/docs/get_started/run-your-first-pipeline) with `-profile test` before running the workflow on actual data.
+> If you are new to Nextflow and nf-core, please refer to [this page](https://nf-co.re/docs/get_started/environment_setup/overview) on how to set up Nextflow.
 
-<!-- TODO nf-core: Describe the minimum required steps to execute the pipeline, e.g. how to prepare samplesheets.
-     Explain what rows and columns represent. For instance (please edit as appropriate):
-
-First, prepare a samplesheet with your input data that looks as follows:
-
-`samplesheet.csv`:
-
-```csv
-sample,fastq_1,fastq_2
-CONTROL_REP1,AEG588A1_S1_L002_R1_001.fastq.gz,AEG588A1_S1_L002_R2_001.fastq.gz
-```
-
-Each row represents a fastq file (single-end) or a pair of fastq files (paired end).
-
--->
-
-Now, you can run the pipeline using:
-
-<!-- TODO nf-core: update the following command to include all required parameters for a minimal example -->
+Once the workflow is available, a run will look like:
 
 ```bash
 nextflow run bigbio/quantmsandes \
    -profile <docker/singularity/.../institute> \
-   --input samplesheet.csv \
+   --input experiment.sdrf.tsv \
+   --database proteins.fasta \
    --outdir <OUTDIR>
 ```
 
