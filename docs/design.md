@@ -5,9 +5,10 @@ Status: draft, 2026-10-19.
 ## 1. Summary
 
 quantmsandes is an independent pipeline of the quantms ecosystem for exploratory DDA
-proteomics with the andes search engine. andes does identification and quantification,
-Percolator rescores PSMs once over all runs, OpenMS infers proteins, and mokume quantifies
-them. pmultiqc reports quality control.
+proteomics with the andes search engine. andes does identification (with predicted
+retention-time and fragment features computed in the same search), quantification and
+protein inference; Percolator rescores PSMs once over all runs; mokume quantifies proteins.
+pmultiqc reports quality control. The pipeline uses no OpenMS tools.
 
 quantms stays the production pipeline and quantmsdiann the DIA-NN pipeline. quantmsandes
 shares their input conventions (SDRF) and reporting (pmultiqc), not their code paths.
@@ -22,8 +23,10 @@ First version:
 
 - DDA label-free (LFQ), with match-between-runs (MBR).
 - DDA TMT and iTRAQ.
-- PSM rescoring with Percolator, run once over all runs.
-- Protein inference with OpenMS.
+- PSM rescoring with Percolator, run once over all runs, on andes's features plus predicted
+  retention-time (and later fragment-intensity) features that andes computes during the
+  search.
+- Protein inference with andes.
 - Protein quantification with mokume.
 - pmultiqc report.
 
@@ -45,7 +48,8 @@ INPUT_CHECK            SDRF parsing and validation                            [1
 ANDES_INDEX            build the fragment index once                          [1 task]
 ANDES_SEARCH           per run: search, write PIN + quant tables              [1 task per run]
                        andes --spectrum RUN --database DB --mods MODS
-                             --output-pin RUN.pin --quant-dir QDIR ...
+                             --output-pin RUN.pin --quant-dir QDIR
+                             --predicted-features rt ...
 PERCOLATOR             concatenate all PINs, run Percolator once,             [1 task]
                        write target and decoy PSM results
 ANDES_QUANT_LIBRARY    andes quant library --quant-dir QDIR                   [1 task]
@@ -54,10 +58,11 @@ ANDES_QUANT_LIBRARY    andes quant library --quant-dir QDIR                   [1
 ANDES_QUANT_EXTRACT    per run: andes quant extract --quant-dir QDIR --run S  [1 task per run]
 ANDES_QUANT_FINALIZE   andes quant finalize --quant-dir QDIR -o BASE          [1 task]
                              --output-parquet OUT
-PROTEIN_INFERENCE      OpenMS protein inference on the PSMs that pass the     [1 task]
-                       PSM q-value cut-off
-ANNOTATE_GROUPS        write the protein groups into the feature parquet      [1 task]
-                       (pg_accessions, anchor_protein, unique, pg_global_qvalue)
+ANDES_PROTEINS         andes protein inference on the PSMs that pass the      [1 task]
+                       Percolator q-value cut-off; writes the protein groups
+                       and their protein q-values, and the groups into the
+                       feature parquet (pg_accessions, anchor_protein, unique,
+                       pg_global_qvalue)
 MOKUME_PROTEINS        mokume quantify features2proteins                      [1 task]
                              --parquet OUT/quantms.feature.parquet --sdrf SDRF ...
 PMULTIQC
@@ -77,6 +82,11 @@ Notes:
 - `quant library` joins the merged Percolator result on (run, SpecId). Two inputs with the
   same file stem collide, so the pipeline must reject duplicate stems at input check.
 - `ANDES_INDEX` is its own task so every search task reuses one index.
+- Predicted features are computed inside each `ANDES_SEARCH` task, not in a task of their
+  own: the spectra are already in memory, so nothing is read twice and no intermediate file
+  is staged. The feature columns depend on the flag only, never on the data, so every
+  run's PIN has the same header (a row the model cannot encode gets a neutral value and a
+  flag). Retention time is calibrated per run before the PINs are merged.
 
 ### 3.2 TMT / iTRAQ
 
@@ -88,8 +98,7 @@ ANDES_SEARCH           per run: andes ... --output-pin RUN.pin --tmt PLEX     [1
 PERCOLATOR             concatenate all PINs, run once                         [1 task]
 FILTER_FEATURES        keep feature rows whose PSM passes the Percolator      [1 task]
                        q-value cut-off; concatenate runs
-PROTEIN_INFERENCE      as for LFQ                                             [1 task]
-ANNOTATE_GROUPS        as for LFQ                                             [1 task]
+ANDES_PROTEINS         as for LFQ                                             [1 task]
 MOKUME_PROTEINS        --quant-method abd                                     [1 task]
 PMULTIQC
 ```
@@ -110,10 +119,11 @@ corrected values in `intensities` (labels `TMT126` … or `ITRAQ114` …) and ra
 ### 5.1 Parameters with quantms names
 
 Used with the same meaning as in quantms: the input/output, SDRF validation, institutional
-and generic options, `database`, `enable_pmultiqc`, `contaminant_string`, and the protein
-inference parameters (`protein_inference_method`, `protein_score`, `use_shared_peptides`,
-`min_peptides_per_protein`, `top_PSMs`, `update_PSM_probabilities`,
-`protein_level_fdr_cutoff`, `picked_fdr`, `psm_level_fdr_cutoff`, `fdr_conservative`).
+and generic options, `database`, `enable_pmultiqc` and `contaminant_string`. The protein
+inference parameters keep their quantms names where andes's inference has the same setting
+(for example `protein_level_fdr_cutoff`, `use_shared_peptides`,
+`min_peptides_per_protein`, `picked_fdr`); the set is fixed with the andes inference
+(8.3).
 
 Translated into andes flags:
 
@@ -180,6 +190,7 @@ Defaults follow andes's own defaults unless stated.
 | `andes_mbr`                | runs the library, extract and finalize steps | `true` (andes's own default is `false`) |
 | `andes_mbr_library_fdr`    | `--mbr-library-fdr`                          | `0.01`                                  |
 | `andes_quant_feature_fdr`  | `--quant-feature-fdr`                        | `off`                                   |
+| `andes_predicted_features` | `--predicted-features`                       | `none` until measured; then `rt`        |
 | `andes_extra_args`         | extra flags passed to `andes search`         | `''`                                    |
 
 `andes_glyco` requires `andes_glyco_species` or `andes_glyco_glycan_db`; the schema should
@@ -237,7 +248,9 @@ raw quantity; andes's own normalised value (`quantity_normalized`) is only writt
   - Tested with the 0.3.0 archive under Docker and under Singularity with `--no-home
 --containall`: a Thermo `.raw` search and Percolator on its output ran in both, with
     the same results.
-- **OpenMS (protein inference):** the image quantms uses.
+- The predicted-feature models ship with andes: the native retention-time model is pure
+  Rust, with its weights in the release next to the scoring models; fragment-intensity
+  models need the ONNX runtime in the image.
 - **mokume:** the released `mokume` package image.
 - **sdrf-pipelines and pmultiqc:** the images quantms uses.
 
@@ -251,19 +264,19 @@ raw quantity; andes's own normalised value (`quantity_normalized`) is only writt
 2. **Transferred values.** mokume ignores `evidence_type`, so MBR-transferred quantities
    weigh the same as identified ones. Decide whether that is acceptable or mokume needs an
    option.
-3. **Writing protein groups back for mokume.** Without inferred groups, andes's `unique`
-   flag means "maps to exactly one accession" and `pg_global_qvalue` is empty, so mokume's
-   `--min-unique` would count peptides unique to one accession, not to one group.
-   `ANNOTATE_GROUPS` must replace `pg_accessions`, `anchor_protein` and `unique`. Decide its
-   implementation.
+3. **andes protein inference.** To be built in andes: the grouping rule (parsimony, razor
+   peptides), the protein q-value (picked protein FDR), and the interface (a subcommand over
+   the merged Percolator result). It writes the groups into the feature parquet, so mokume's
+   `--min-unique` counts peptides unique to a group, not to one accession.
 4. **Variant FDR with one external Percolator.** andes builds knockoff variants and applies
    the class and knockoff FDR only when it rescores itself (`--rescore`). With one
    Percolator over all runs, variant PSMs get neither. Options: an andes subcommand that
    applies the class and knockoff FDR to the merged Percolator result, or per-run
    `--rescore` in the proteoform mode.
 5. **TMT filtering.** Confirm whether `quantms.feature.parquet` from `andes search --tmt`
-   is filtered by FDR, and how its rows join to the merged Percolator result.
-   `--tmt-min-purity` filters `tmt.tsv` but not the parquet.
+   is filtered by FDR, and how its rows join to the merged Percolator result. The
+   quantification gate (purity, PEP, S/N) applies to `tmt.tsv` and the parquet alike from
+   0.4.0.
 6. **MBR off.** Confirm the LFQ path when `andes_mbr = false`.
 7. **Shared index.** Confirm how a prebuilt fragment index is passed to `andes search`.
 8. **pmultiqc input.** pmultiqc looks for `*.psm.parquet`, which does not match andes's
@@ -274,7 +287,11 @@ raw quantity; andes's own normalised value (`quantity_normalized`) is only writt
    write them in ProForma terminal notation with an accession per part.
 10. **iTRAQ labels.** andes writes `ITRAQ114`-style labels; mokume matches labels to the
     SDRF exactly after lowercasing. Check the SDRF label spelling matches.
-11. **Decoys in mokume.** mokume drops decoy rows through its contaminant patterns. Confirm
+11. **Predicted features.** Measure the search time and the yield of
+    `--predicted-features rt` (then `rt,ms2`) on Astral, TMT, UPS1 and timsTOF before
+    making `rt` the default. Fragment-intensity models: MS2PIP first (Apache-2.0); others
+    only once their weight licence is clear.
+12. **Decoys in mokume.** mokume drops decoy rows through its contaminant patterns. Confirm
     the pipeline passes a pattern that matches andes decoys (`XXX_`, or the database's own
     decoy string).
 
@@ -292,7 +309,8 @@ raw quantity; andes's own normalised value (`quantity_normalized`) is only writt
 1. andes container (andes and Percolator, Docker and Singularity).
 2. Input check from SDRF, and the parameter schema.
 3. LFQ: index, search, Percolator, library, extract, finalize.
-4. Protein inference, group annotation, mokume and pmultiqc.
+4. andes protein inference, mokume and pmultiqc.
 5. TMT.
 6. Exploratory modes: glyco, proteoforms, chimeric and refinement.
-7. Resolve open questions 8.1–8.4 with benchmark runs before fixing defaults.
+7. Predicted features in the search (retention time, then fragment intensities).
+8. Resolve open questions 8.1–8.4 and 8.11 with benchmark runs before fixing defaults.

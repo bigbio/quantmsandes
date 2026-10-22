@@ -65,10 +65,11 @@ Planned workflow for DDA label-free and TMT/iTRAQ data:
 2. **Search:** andes builds its fragment index once, then searches each run (Thermo `.raw`,
    Bruker `.d` and mzML are read directly).
 3. **PSM rescoring:** one [Percolator](https://github.com/percolator/percolator) run over all
-   runs.
+   runs, on andes's features plus predicted retention-time and fragment features that andes
+   computes during the search.
 4. **Quantification:** andes label-free quantification with match-between-runs, or reporter
    ion quantification for TMT/iTRAQ.
-5. **Protein inference:** [OpenMS](https://www.openms.de/) protein inference.
+5. **Protein inference:** andes protein inference.
 6. **Protein quantification:** [mokume](https://github.com/bigbio/mokume).
 7. **Quality control:** [pmultiqc](https://github.com/bigbio/pmultiqc).
 
